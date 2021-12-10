@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse,pickle,sys,mllpa,os
@@ -6,6 +7,8 @@ from scipy import stats
 from scipy.spatial import Voronoi, voronoi_plot_2d
 
 parser = argparse.ArgumentParser()
+parser.add_argument('-resnames',nargs='+',help='Residue Names')
+parser.add_argument('-resnumbs',nargs='+',help='Residue Numbers')
 parser.add_argument('-train', nargs='+',help='Training set names',required=True)
 parser.add_argument('-phases', nargs='+',help='Names of phases (match training set order)',required=True)
 parser.add_argument('-step', nargs='+', help='[0] Create Training Set, [1] Read in Configurations, [2] Analzye Configurations')
@@ -16,6 +19,7 @@ parser.add_argument('-skip',default=1, type=int, help="How many steps should be 
 parser.add_argument('-nblocks',default=5, type=int, help="Number of blocks for the calculation")
 parser.add_argument('-low', default=0, type=int, help="Lower bound for voronoi plot")
 parser.add_argument('-high', default=100, type=int, help="Higher bound for voronoi plot")
+parser.add_argument('-rank', default=6, type=int, help="Rank for calculation of distances [default 6]")
 args = parser.parse_args()
 
 train      =   args.train
@@ -28,6 +32,9 @@ skip        =   args.skip
 nblocks     =   args.nblocks
 low         =   args.low
 high        =   args.high
+resnames    =   args.resnames
+resnumbs    =   args.resnumbs
+rank        =   args.rank
 
 # Calculate t_val
 t_val = stats.t.ppf(0.975,nblocks-1)/np.sqrt(nblocks)
@@ -49,14 +56,16 @@ def step_train(lipid,N):
         print(training_set)
         print(liptype)
         print(datafile)
+        print("Using rank %s" % rank)
         if not exists("dumps/"+training_set):
             sys.exit("Error: dumps/"+training_set + " doesn't exist")
         if not exists(datafile):
             sys.exit("Error: %s not found" % datafile)
-        tsets.append(mllpa.openSystem(datafile,datafile,lipid,trj="dumps/"+training_set,nlipids=N,step=skip))
+        tsets.append(mllpa.openSystem(datafile,datafile,lipid,trj="dumps/"+training_set,step=skip,rank=rank))
     final_model=mllpa.generateModel(tsets,phases,save_model=False)
     pickle.dump(final_model,open(lipid+"_model.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
     print("Model dumped to %s_model.pckl" % lipid)
+    print(final_model['scores']['final_score'])
     return
 
 def step_read(lipid,N):
@@ -64,7 +73,7 @@ def step_read(lipid,N):
     allsystems={}
     tesselations={}
     for t in temperatures:
-        allsystems[t]=mllpa.openSystem(datafile,datafile,lipid,trj="dumps/"+t+".lammpsdump",nlipids=N,step=skip)
+        allsystems[t]=mllpa.openSystem(datafile,datafile,lipid,trj="dumps/"+t+".lammpsdump",step=skip,rank=rank)
     pickle.dump(allsystems,open(lipid+"_allsystems.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
     return
 
@@ -72,6 +81,10 @@ def step_classify(lipid,N):
     temperatures = np.genfromtxt("temperatures.dat",usecols=0,dtype=str)
     allsystems=pickle.load(open(lipid+"_allsystems.pckl",'rb'))
     final_model = pickle.load(open(lipid+"_model.pckl",'rb'))
+    print("Recall - using model with these scores:")
+    for key in final_model['scores']['final_score']:
+        print("%s : %s" % (key, final_model['scores']['final_score'][key]))
+    print("Now classifying!")
     allphases={}
     for t in temperatures:
         allphases[t]=allsystems[t].getPhases(final_model)
@@ -187,6 +200,25 @@ def step_plot(lipid,N):
 ### End Functions ###
 
 run_checks()
+
+if "setup" in step:
+    print(resnames)
+    print(resnumbs)
+    cnt=0
+    f=open('atom.names','w')
+    g=open('data.residues','w')
+    for res in resnames:
+        atoms=np.genfromtxt(res+".names",dtype=str)
+        if len(atoms.shape) == 0:
+            atoms = np.array([atoms])
+        for mol in range(int(resnumbs[cnt])):
+            g.write("%s\n" % res)
+            for a in atoms:
+                f.write("%s\n" % a)
+        cnt = cnt + 1
+    f.close()
+    g.close()
+
 
 if "0" in step:
     print("Beginning to train model")
