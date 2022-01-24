@@ -15,11 +15,14 @@ parser.add_argument('-step', nargs='+', help='[0] Create Training Set, [1] Read 
 parser.add_argument('-data', default="system.data",type=str,help="Lammps data file to read")
 parser.add_argument('-liptype',default="DPPC",nargs='+', type=str, help="Name of the lipid",required=True)
 parser.add_argument('-nlipids', nargs='+', help="Number of lipids")
-parser.add_argument('-skip',default=1, type=int, help="How many steps should be skipped")
-parser.add_argument('-nblocks',default=5, type=int, help="Number of blocks for the calculation")
-parser.add_argument('-low', default=0, type=int, help="Lower bound for voronoi plot")
-parser.add_argument('-high', default=100, type=int, help="Higher bound for voronoi plot")
+parser.add_argument('-skip',default=1, type=int, help="How many steps should be skipped [default 1]")
+parser.add_argument('-nblocks',default=5, type=int, help="Number of blocks for the calculation [default 5]")
+parser.add_argument('-low', default=0, type=int, help="Lower bound for voronoi plot [default 0]")
+parser.add_argument('-high', default=100, type=int, help="Higher bound for voronoi plot [default 100]")
 parser.add_argument('-rank', default=6, type=int, help="Rank for calculation of distances [default 6]")
+parser.add_argument('-prefile',default="temperatures.dat", type=str, help="File prefixes [default temperatures.dat]")
+parser.add_argument('-postfix',default='.lammpsdump', type=str, help="Default postfix for dump file [default .lammpsdump]")
+parser.add_argument('-dumpdir',default="dumps", type=str, help="Dump directory location [default dumps]")
 args = parser.parse_args()
 
 train      =   args.train
@@ -35,6 +38,14 @@ high        =   args.high
 resnames    =   args.resnames
 resnumbs    =   args.resnumbs
 rank        =   args.rank
+prefile     =   args.prefile
+postfix     =   args.postfix
+dumpdir     =   args.dumpdir
+
+f=open('mllpa.logfile','a')
+f.write("****\n")
+f.write("%s\n" % (' '.join(sys.argv)))
+f.close()
 
 # Calculate t_val
 t_val = stats.t.ppf(0.975,nblocks-1)/np.sqrt(nblocks)
@@ -57,11 +68,11 @@ def step_train(lipid,N):
         print(liptype)
         print(datafile)
         print("Using rank %s" % rank)
-        if not exists("dumps/"+training_set):
-            sys.exit("Error: dumps/"+training_set + " doesn't exist")
+        if not exists(dumpdir+"/"+training_set):
+            sys.exit("Error: " +dumpdir+"/"+training_set + " doesn't exist")
         if not exists(datafile):
             sys.exit("Error: %s not found" % datafile)
-        tsets.append(mllpa.openSystem(datafile,datafile,lipid,trj="dumps/"+training_set,step=skip,rank=rank))
+        tsets.append(mllpa.openSystem(datafile,datafile,lipid,trj=dumpdir+"/"+training_set,step=skip,rank=rank))
     final_model=mllpa.generateModel(tsets,phases,save_model=False)
     pickle.dump(final_model,open(lipid+"_model.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
     print("Model dumped to %s_model.pckl" % lipid)
@@ -69,16 +80,16 @@ def step_train(lipid,N):
     return
 
 def step_read(lipid,N):
-    temperatures = np.genfromtxt("temperatures.dat",usecols=0,dtype=str)
+    fnames = np.genfromtxt(prefile,usecols=0,dtype=str)
     allsystems={}
     tesselations={}
-    for t in temperatures:
-        allsystems[t]=mllpa.openSystem(datafile,datafile,lipid,trj="dumps/"+t+".lammpsdump",step=skip,rank=rank)
-    pickle.dump(allsystems,open(lipid+"_allsystems.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
+    for t in fnames:
+        allsystems[t]=mllpa.openSystem(datafile,datafile,lipid,trj=dumpdir+"/"+t+postfix,step=skip,rank=rank)
+    #pickle.dump(allsystems,open(lipid+"_allsystems.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
     return
 
 def step_classify(lipid,N):
-    temperatures = np.genfromtxt("temperatures.dat",usecols=0,dtype=str)
+    fnames = np.genfromtxt(prefile,usecols=0,dtype=str)
     allsystems=pickle.load(open(lipid+"_allsystems.pckl",'rb'))
     final_model = pickle.load(open(lipid+"_model.pckl",'rb'))
     print("Recall - using model with these scores:")
@@ -86,7 +97,8 @@ def step_classify(lipid,N):
         print("%s : %s" % (key, final_model['scores']['final_score'][key]))
     print("Now classifying!")
     allphases={}
-    for t in temperatures:
+    for t in fnames:
+        print("Classifying ",t)
         allphases[t]=allsystems[t].getPhases(final_model)
     pickle.dump(allphases,open(lipid+"_allphases.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
     # re-writes the information on the class
@@ -95,19 +107,29 @@ def step_classify(lipid,N):
 
 def step_analyze(lipid):
     allphases=pickle.load(open(lipid+"_allphases.pckl",'rb'))
-    temperatures = np.genfromtxt("temperatures.dat",usecols=0,dtype=float)
-    fracs, errs = {},{}
+    for key in allphases:
+        print(key,np.shape(allphases[key]))
+    fnames = np.genfromtxt(prefile,usecols=0,dtype='unicode')
+    print(fnames)
+    fracs, errs,bl_frac ={}, {},{}
     for p in phases:
         fracs[p]    = []
         errs[p]     = []
+        bl_frac[p]  = []
+
     for key in allphases:
-        tmp_frac,tmp_err = calc_frac(allphases[key])
+        tmp_frac,tmp_err,tmp_bl,tmp_all = calc_frac(allphases[key])
         for p in phases:
             fracs[p].append(tmp_frac[p])
             errs[p].append(tmp_err[p])
+            bl_frac[p].append(tmp_bl[p])
+            np.savetxt(lipid + "_x"+p+"_"+key+".out",np.c_[tmp_all[p]])
+    print(np.shape(fracs['Gel']))
     for p in phases:
-        np.savetxt(lipid+"_x"+p+".dat",np.c_[temperatures,fracs[p],errs[p]])
+        np.savetxt(lipid+"_x"+p+".dat",np.c_[fnames,fracs[p],errs[p]],fmt="%s")
+
     pickle.dump(fracs,open(lipid+"_fracs.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
+    pickle.dump(bl_frac,open(lipid+"_blfracs.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
     return
 
 def calc_frac(phaseinfo):
@@ -121,11 +143,13 @@ def calc_frac(phaseinfo):
     frac={}
     bl_frac={}
     err_frac={}
+    all_frac={}
     for p in phases:
+        all_frac[p]=np.sum(n[p],axis=1)/np.sum(np.sum([n[i] for i in phases],axis=0),axis=1)
         frac[p] = np.sum(n[p])/np.sum([n[i] for i in phases])
         bl_frac[p]=np.divide(np.sum(bl_n[p],axis=1),bl_tot)
         err_frac[p]=np.std(bl_frac[p])*t_val
-    return frac, err_frac
+    return frac, err_frac, bl_frac,all_frac
 
 def single_frac(phaseinfo,N,target):
     n={}
@@ -143,25 +167,25 @@ def single_frac(phaseinfo,N,target):
 
 
 def step_Voronoi(lipid,N):
-    temperatures = np.genfromtxt("temperatures.dat",usecols=0,dtype=str)
+    fnames = np.genfromtxt(prefile,usecols=0,dtype=str)
     allsystems=pickle.load(open(lipid+"_allsystems.pckl",'rb'))
     allphases=pickle.load(open(lipid+"_allphases.pckl",'rb'))
     fracs=pickle.load(open(lipid+"_fracs.pckl",'rb'))
     tesselations={}
     if not os.path.isdir("plots"): os.mkdir("plots")
-    for t in temperatures:
+    for t in fnames:
         tesselations[t]=mllpa.doVoro([allsystems[t]],geometry='bilayer',read_neighbors=True)
     pickle.dump(tesselations,open(lipid+"_tesselations.pckl",'wb'),protocol=pickle.HIGHEST_PROTOCOL)
     return
 
 def step_plot(lipid,N):
-    temperatures = np.genfromtxt("temperatures.dat",usecols=0,dtype=str)
+    fnames = np.genfromtxt(prefile,usecols=0,dtype=str)
     allsystems=pickle.load(open(lipid+"_allsystems.pckl",'rb'))
     allphases=pickle.load(open(lipid+"_allphases.pckl",'rb'))
     tesselations=pickle.load(open(lipid+"_tesselations.pckl",'rb'))
     fracs=pickle.load(open(lipid+"_fracs.pckl",'rb'))
     itercnt=0
-    for t in temperatures:
+    for t in fnames:
         frame=single_frac(allphases[t],N,fracs[phases[0]][itercnt])
         xy=tesselations[t].positions
         points=xy[frame,:,0:2]
